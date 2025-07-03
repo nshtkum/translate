@@ -1,56 +1,66 @@
 import streamlit as st
 import requests
 from docx import Document
+from docx.shared import Pt
+from io import BytesIO
 
-# Load Hugging Face API key from secrets
+# Load token
 API_TOKEN = st.secrets["huggingface"]["api_key"]
+API_URL = "https://api-inference.huggingface.co/models/facebook/nllb-200-distilled-600M"
+HEADERS = {"Authorization": f"Bearer {API_TOKEN}"}
 
-# App title
-st.title("🌐 Translate Text File using Meta's NLLB")
+st.title("📄 Word File Translator (Meta AI)")
 
-# File upload
-uploaded_file = st.file_uploader("Upload a .txt file", type=["txt"])
+uploaded_file = st.file_uploader("Upload a Word (.docx) file", type=["docx"])
 
-# Language selection
 source_lang = st.selectbox("Source Language (ISO)", ["eng", "hin", "fra", "deu", "spa"])
 target_lang = st.selectbox("Target Language (ISO)", ["hin", "eng", "fra", "deu", "spa"])
 
-# When file is uploaded
-if uploaded_file is not None:
-    text = uploaded_file.read().decode("utf-8")
+def translate(text, src, tgt):
+    payload = {
+        "inputs": text,
+        "parameters": {"src_lang": src, "tgt_lang": tgt}
+    }
+    try:
+        r = requests.post(API_URL, headers=HEADERS, json=payload, timeout=30)
+        r.raise_for_status()
+        return r.json()[0]["translation_text"]
+    except Exception as e:
+        return "[Translation failed]"
 
-    if st.button("Translate"):
-        with st.spinner("Translating..."):
-            # Meta's NLLB-200 API
-            API_URL = "https://api-inference.huggingface.co/models/facebook/nllb-200-distilled-600M"
-            headers = {"Authorization": f"Bearer {API_TOKEN}"}
-            payload = {
-                "inputs": text,
-                "parameters": {
-                    "src_lang": source_lang,
-                    "tgt_lang": target_lang
-                }
-            }
+if uploaded_file and st.button("Translate and Download"):
+    with st.spinner("Translating... Please wait"):
+        original_doc = Document(uploaded_file)
+        translated_doc = Document()
 
-            response = requests.post(API_URL, headers=headers, json=payload)
-            if response.status_code == 200:
-                translated_text = response.json()[0]["translation_text"]
+        for para in original_doc.paragraphs:
+            text = para.text.strip()
+            if not text:
+                translated_doc.add_paragraph("")
+                continue
 
-                # Create Word Document
-                doc = Document()
-                doc.add_heading("Translated Output", 0)
-                doc.add_paragraph(translated_text)
+            translated_text = translate(text, source_lang, target_lang)
 
-                output_file = "translated_output.docx"
-                doc.save(output_file)
+            new_para = translated_doc.add_paragraph()
+            run = new_para.add_run(translated_text)
 
-                with open(output_file, "rb") as f:
-                    st.success("✅ Translation completed!")
-                    st.download_button(
-                        label="Download Translated Word File",
-                        data=f,
-                        file_name="translated_output.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    )
-            else:
-                st.error("❌ Error in translation. Try again later.")
+            # Copy formatting from original run
+            if para.runs:
+                original_run = para.runs[0]
+                run.bold = original_run.bold
+                run.italic = original_run.italic
+                run.font.size = original_run.font.size or Pt(12)
+                run.font.name = original_run.font.name or "Arial"
+
+        # Save in memory
+        output = BytesIO()
+        translated_doc.save(output)
+        output.seek(0)
+
+        st.success("✅ Translation completed!")
+        st.download_button(
+            label="Download Translated File",
+            data=output,
+            file_name="translated_output.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
