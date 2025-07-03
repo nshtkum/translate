@@ -4,18 +4,27 @@ from docx import Document
 from io import BytesIO
 import json
 import time
-import re # Added for more robust cleaning
+import re
 
-# Configuration
-API_URL = "https://bagwkqqw6a6i3e7p.us-east-1.aws.endpoints.huggingface.cloud"
+# --- Configuration ---
 # Ensure you have HF_TOKEN in your Streamlit secrets
-HF_TOKEN = st.secrets["huggingface"]["api_key"]
-headers = {
-    "Authorization": f"Bearer {HF_TOKEN}",
-    "Content-Type": "application/json"
-}
+# The secrets.toml file should look like this:
+# [huggingface]
+# api_key = "hf_YOUR_HUGGINGFACE_TOKEN"
 
-# Language mapping
+API_URL = "https://bagwkqqw6a6i3e7p.us-east-1.aws.endpoints.huggingface.cloud"
+try:
+    HF_TOKEN = st.secrets["huggingface"]["api_key"]
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "application/json"
+    }
+except (KeyError, FileNotFoundError):
+    st.error("Hugging Face API key not found. Please add it to your Streamlit secrets.", icon="🚨")
+    st.stop()
+
+
+# --- Language and Style Definitions ---
 INDIC_LANGS = {
     "English": "eng_Latn",
     "Hindi": "hin_Deva",
@@ -33,33 +42,51 @@ INDIC_LANGS = {
     "Nepali": "nep_Deva"
 }
 
-# Style prompts (kept for UI but not used in the API call)
 STYLE_PROMPTS = {
     "formal": "",
-    "conversational": "Translate in a natural, conversational style as people speak in daily life. Avoid overly formal or literary language.",
-    "casual": "Translate in a casual, friendly tone using common everyday words that people use in normal conversation.",
-    "simple": "Use simple, easy-to-understand words that are commonly used in everyday speech."
+    "conversational": "Translate in a natural, conversational style.",
+    "casual": "Translate in a casual, friendly tone.",
+    "simple": "Use simple, easy-to-understand words."
 }
 
-# --- FIX 1: Correct the preprocessing function ---
-def preprocess_text(text, style="conversational"):
+
+# --- Core Functions ---
+
+def preprocess_text(text):
     """
-    Prepares text for the translation model.
-    FIX: Style instructions are no longer prepended. The NLLB model is a direct
-    translation model and does not interpret natural language style prompts.
-    Instead, it often translates the prompt itself, leading to the error you saw.
-    Translation style is primarily influenced by the model's training data and
-    parameters like 'temperature'.
+    Prepares text for the translation model. Style instructions are not prepended
+    as the NLLB model does not use them and often translates the prompt itself.
     """
     return text.strip()
 
-def translate_text(text, source_lang, target_lang, style="conversational", max_retries=3):
-    """Translate text with retry logic and style enhancement"""
-    if not text.strip():
-        return text
+def clean_translation(translation, original_text):
+    """
+    Cleans the raw output from the translation model by removing artifacts
+    like echoed input text or boilerplate labels.
+    """
+    if not translation:
+        return ""
 
-    # The text is no longer modified with style instructions.
-    processed_text = preprocess_text(text, style)
+    cleaned = translation.strip()
+
+    # Remove the original text if the model echoes it at the beginning
+    if cleaned.startswith(original_text):
+        cleaned = cleaned[len(original_text):].strip()
+
+    # Use regex to remove common prefixes/labels (e.g., "Translation:")
+    cleaned = re.sub(r'^[A-Za-z_]+\s*:\s*', '', cleaned)
+
+    # Final normalization of whitespace
+    cleaned = " ".join(cleaned.split())
+
+    return cleaned
+
+def translate_text(text, source_lang, target_lang, max_retries=3):
+    """Translate text using the API, with retry logic."""
+    if not text.strip():
+        return ""
+
+    processed_text = preprocess_text(text)
 
     payload = {
         "inputs": processed_text,
@@ -83,10 +110,8 @@ def translate_text(text, source_lang, target_lang, style="conversational", max_r
             response.raise_for_status()
             result = response.json()
 
-            if isinstance(result, list) and len(result) > 0:
+            if isinstance(result, list) and result:
                 translation = result[0].get("translation_text", "")
-                # --- FIX 3: Pass original text to the new cleaning function ---
-                # Pass the original `text` for more accurate cleaning.
                 cleaned_translation = clean_translation(translation, text)
                 return cleaned_translation
             else:
@@ -102,59 +127,27 @@ def translate_text(text, source_lang, target_lang, style="conversational", max_r
         except Exception as e:
             return f"[ERROR] {str(e)}"
 
-    return "[ERROR] Translation failed"
-
-# --- FIX 2: Implement a more robust cleaning function ---
-def clean_translation(translation, original_text):
-    """
-    Cleans the raw output from the translation model.
-    FIX: This function no longer tries to remove the English prompt from the
-    translated text. Instead, it removes common artifacts like the model
-    echoing the original input or adding boilerplate labels.
-    """
-    if not translation:
-        return ""
-
-    cleaned = translation.strip()
-
-    # 1. Remove the original text if the model echoes it at the beginning.
-    # This is safer than a simple .replace().
-    if cleaned.startswith(original_text):
-        cleaned = cleaned[len(original_text):].strip()
-
-    # 2. Use regex to remove common prefixes/labels (e.g., "Translation:", "hin_Deva:")
-    # that the model might add. This is more flexible than a fixed list.
-    cleaned = re.sub(r'^[A-Za-z_]+\s*:\s*', '', cleaned)
-
-    # 3. Final normalization of whitespace to ensure clean output.
-    cleaned = " ".join(cleaned.split())
-
-    return cleaned
+    return "[ERROR] Translation failed after multiple retries"
 
 def extract_text_from_docx(uploaded_file):
-    """Extract text from docx file with better structure preservation"""
-    doc = Document(uploaded_file)
-    content = []
-    
-    for element in doc.element.body:
-        if element.tag.endswith('p'):
-            para_text = ""
-            for run in element.itertext():
-                para_text += run
-            if para_text.strip():
-                content.append(("paragraph", para_text.strip()))
-        elif element.tag.endswith('tbl'):
-            # This logic can be expanded to handle table text extraction if needed
-            content.append(("table", "[Table content - manual review needed]"))
-    
-    return content
+    """
+    Extracts text from a .docx file paragraph by paragraph using the reliable
+    high-level python-docx API to prevent text duplication.
+    """
+    try:
+        doc = Document(uploaded_file)
+        content = []
+        for para in doc.paragraphs:
+            if para.text.strip():
+                content.append(para.text.strip())
+        return content
+    except Exception as e:
+        st.error(f"Could not read the document. It may be corrupted. Error: {e}", icon="📄")
+        return []
 
-# Streamlit UI
-st.set_page_config(
-    page_title="Document Translator",
-    page_icon="🌐",
-    layout="wide"
-)
+
+# --- Streamlit UI ---
+st.set_page_config(page_title="Document Translator", page_icon="🌐", layout="wide")
 
 # Initialize session state
 if 'translating' not in st.session_state:
@@ -163,126 +156,102 @@ if 'translated_paragraphs' not in st.session_state:
     st.session_state.translated_paragraphs = []
 if 'current_paragraph' not in st.session_state:
     st.session_state.current_paragraph = 0
-if 'translation_in_progress' not in st.session_state:
-    st.session_state.translation_in_progress = False
 
-st.title("Indian Language Document Translator")
-st.write("Translate Word documents between Indian languages using Meta's NLLB-200 model")
+st.title("Indian Language Document Translator 🇮🇳")
+st.write("Translate Word documents between Indian languages using Meta's NLLB-200 model.")
 
 col1, col2 = st.columns([1, 2])
 
+# --- Left Column (Settings) ---
 with col1:
     st.subheader("Settings")
-    uploaded_file = st.file_uploader("Choose a Word document", type=["docx"])
-    source = st.selectbox("From Language", list(INDIC_LANGS.keys()), index=0)
-    target = st.selectbox("To Language", list(INDIC_LANGS.keys()), index=1)
-    style = st.selectbox("Translation Style", ["conversational", "casual", "simple", "formal"], index=0)
-    
+    uploaded_file = st.file_uploader("1. Choose a Word document", type=["docx"])
+    source_lang_name = st.selectbox("2. From Language", list(INDIC_LANGS.keys()), index=0)
+    target_lang_name = st.selectbox("3. To Language", list(INDIC_LANGS.keys()), index=1)
+    # Style dropdown is kept for potential future use but does not affect the current model
+    style = st.selectbox("Translation Style (Note: model may default to formal)", list(STYLE_PROMPTS.keys()), index=0)
+
+# --- Right Column (Translation) ---
 with col2:
     st.subheader("Translation")
-    
-    if uploaded_file is not None:
-        try:
-            content = extract_text_from_docx(uploaded_file)
-            paragraphs = [item[1] for item in content if item[0] == "paragraph"]
-            
-            if not paragraphs:
-                st.warning("No text content found in the document.")
-                st.stop()
-            
-            # Use a separate key for the button to prevent state issues
-            start_button = st.button("Start Translation", key="start_translating")
+
+    if uploaded_file:
+        paragraphs = extract_text_from_docx(uploaded_file)
+
+        if not paragraphs:
+            st.warning("No text found in the document or the file could not be read.", icon="⚠️")
+        else:
+            st.info(f"Found {len(paragraphs)} paragraphs. Click below to start.", icon="💡")
+
+            start_button = st.button("Start Translation", key="start_translating", type="primary")
 
             if start_button and not st.session_state.translating:
                 st.session_state.translating = True
                 st.session_state.translated_paragraphs = [""] * len(paragraphs)
                 st.session_state.current_paragraph = 0
-                st.session_state.translation_in_progress = True
                 st.rerun()
 
-            # Display translations
-            edited_translations = st.session_state.translated_paragraphs[:]
-            
-            if paragraphs:
-                st.info(f"Found {len(paragraphs)} paragraphs. Please review each translation.")
-            
-            for i, paragraph in enumerate(paragraphs):
-                st.markdown(f"**Original Paragraph {i+1}:**")
-                st.write(paragraph)
-                
-                # Use the stored list for edited values
-                edited_translations[i] = st.text_area(
-                    f"Translation {i+1}:",
-                    value=st.session_state.translated_paragraphs[i],
-                    height=100,
-                    key=f"trans_{i}",
-                    placeholder="Translation will appear here..."
-                )
-                st.markdown("---")
-            
-            # After the loop, update the session state with the edited values
-            st.session_state.translated_paragraphs = edited_translations
-
-            # Translation process
-            if st.session_state.translating and st.session_state.current_paragraph < len(paragraphs):
+            # --- Translation Process Logic ---
+            if st.session_state.translating:
                 current_idx = st.session_state.current_paragraph
-                
-                progress = (current_idx + 1) / len(paragraphs)
-                st.progress(progress, text=f"Translating paragraph {current_idx + 1} of {len(paragraphs)}")
+                if current_idx < len(paragraphs):
+                    progress = (current_idx + 1) / len(paragraphs)
+                    st.progress(progress, text=f"Translating paragraph {current_idx + 1} of {len(paragraphs)}...")
 
-                translation = translate_text(
-                    paragraphs[current_idx],
-                    INDIC_LANGS[source],
-                    INDIC_LANGS[target],
-                    style
-                )
-                
-                st.session_state.translated_paragraphs[current_idx] = translation
-                st.session_state.current_paragraph += 1
-                
-                if st.session_state.current_paragraph >= len(paragraphs):
+                    translation = translate_text(
+                        paragraphs[current_idx],
+                        INDIC_LANGS[source_lang_name],
+                        INDIC_LANGS[target_lang_name]
+                    )
+
+                    st.session_state.translated_paragraphs[current_idx] = translation
+                    st.session_state.current_paragraph += 1
+                    time.sleep(0.5)  # Small delay for UI update
+                    st.rerun()
+                else:
                     st.session_state.translating = False
-                    st.session_state.translation_in_progress = False
-                    st.success("Translation completed!")
-                
-                time.sleep(0.5) # Small delay to allow UI to update
-                st.rerun()
-            
-            # Download button
-            if not st.session_state.translation_in_progress and any(st.session_state.translated_paragraphs):
-                final_doc = Document()
-                for translation in st.session_state.translated_paragraphs:
-                    if translation.strip():
-                        final_doc.add_paragraph(translation)
-                
-                buffer = BytesIO()
-                final_doc.save(buffer)
-                buffer.seek(0)
-                
-                st.download_button(
-                    label="Download Translated Document",
-                    data=buffer.getvalue(),
-                    file_name=f"translated_{uploaded_file.name}",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    type="primary"
-                )
-        
-        except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
-            # Reset state on error
-            st.session_state.translating = False
-            st.session_state.translation_in_progress = False
+                    st.success("Translation complete! You can now review and download.", icon="✅")
+                    st.rerun()
+
+            # --- Display and Edit Results ---
+            if st.session_state.translated_paragraphs:
+                edited_translations = st.session_state.translated_paragraphs[:]
+
+                for i, (original_para, translated_para) in enumerate(zip(paragraphs, st.session_state.translated_paragraphs)):
+                    st.markdown(f"---")
+                    st.markdown(f"**Original Paragraph {i+1}:**")
+                    st.write(original_para)
+
+                    edited_translations[i] = st.text_area(
+                        f"**Translation {i+1}:**",
+                        value=translated_para,
+                        height=100,
+                        key=f"trans_{i}"
+                    )
+                st.session_state.translated_paragraphs = edited_translations
+
+                # --- Download Button ---
+                if not st.session_state.translating:
+                    final_doc = Document()
+                    for translation in st.session_state.translated_paragraphs:
+                        if translation.strip():
+                            final_doc.add_paragraph(translation)
+
+                    buffer = BytesIO()
+                    final_doc.save(buffer)
+                    buffer.seek(0)
+
+                    st.download_button(
+                        label="Download Translated Document",
+                        data=buffer.getvalue(),
+                        file_name=f"translated_{uploaded_file.name}",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        type="primary"
+                    )
 
     else:
         st.info("Please upload a Word document to begin translation.")
 
-# Footer
+# --- Footer ---
 st.markdown("---")
-st.markdown(
-    """
-    **Tips for better translations:**
-    - While style options are available, the underlying model may produce formal language.
-    - Always review and edit translations for accuracy and context.
-    - For highly technical or specific domains, manual editing is recommended.
-    """
-)
+st.markdown("Developed with Streamlit and Hugging Face.")
