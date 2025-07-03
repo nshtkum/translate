@@ -40,16 +40,19 @@ STYLE_PROMPTS = {
 }
 
 def preprocess_text(text, style="conversational"):
+    """Add style instruction to improve translation quality"""
     if style != "formal" and text.strip():
         instruction = STYLE_PROMPTS[style]
         return f"{instruction}\n\nText to translate: {text}"
     return text
 
 def translate_text(text, source_lang, target_lang, style="conversational", max_retries=3):
+    """Translate text with retry logic and style enhancement"""
     if not text.strip():
         return text
     
     processed_text = preprocess_text(text, style)
+    
     payload = {
         "inputs": processed_text,
         "parameters": {
@@ -74,8 +77,11 @@ def translate_text(text, source_lang, target_lang, style="conversational", max_r
             
             if isinstance(result, list) and len(result) > 0:
                 translation = result[0].get("translation_text", "")
-                return clean_translation(translation, style)
-            return "[ERROR] Unexpected response format"
+                # Clean up the translation
+                translation = clean_translation(translation, style, text)
+                return translation
+            else:
+                return "[ERROR] Unexpected response format"
                 
         except requests.exceptions.Timeout:
             if attempt < max_retries - 1:
@@ -89,14 +95,17 @@ def translate_text(text, source_lang, target_lang, style="conversational", max_r
     
     return "[ERROR] Translation failed"
 
-def clean_translation(translation, style):
+def clean_translation(translation, style, original_text):
+    """Clean and post-process translation to return only the translated text"""
     if not translation:
         return translation
     
+    # Remove style instruction
     for prompt in STYLE_PROMPTS.values():
         if prompt and prompt in translation:
-            translation = translation.replace(prompt, "")
+            translation = translation.replace(prompt, "").strip()
     
+    # Remove common prefixes
     prefixes_to_remove = [
         "Text to translate:",
         "Translation:",
@@ -108,9 +117,21 @@ def clean_translation(translation, style):
         if translation.startswith(prefix):
             translation = translation[len(prefix):].strip()
     
+    # Remove the original text if it appears in the translation
+    if original_text in translation:
+        translation = translation.replace(original_text, "").strip()
+    
+    # Remove any residual "Text to translate:" section
+    if "Text to translate:" in translation:
+        translation = translation.split("Text to translate:")[0].strip()
+    
+    # Remove extra newlines and whitespace
+    translation = " ".join(translation.split())
+    
     return translation.strip()
 
 def extract_text_from_docx(uploaded_file):
+    """Extract text from docx file with better structure preservation"""
     doc = Document(uploaded_file)
     content = []
     
