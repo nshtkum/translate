@@ -13,7 +13,7 @@ headers = {
     "Content-Type": "application/json"
 }
 
-# Language mapping with better coverage
+# Language mapping
 INDIC_LANGS = {
     "English": "eng_Latn",
     "Hindi": "hin_Deva",
@@ -31,7 +31,7 @@ INDIC_LANGS = {
     "Nepali": "nep_Deva"
 }
 
-# Style prompts for natural translation
+# Style prompts
 STYLE_PROMPTS = {
     "formal": "",
     "conversational": "Translate in a natural, conversational style as people speak in daily life. Avoid overly formal or literary language.",
@@ -40,27 +40,23 @@ STYLE_PROMPTS = {
 }
 
 def preprocess_text(text, style="conversational"):
-    """Add style instruction to improve translation quality"""
     if style != "formal" and text.strip():
         instruction = STYLE_PROMPTS[style]
         return f"{instruction}\n\nText to translate: {text}"
     return text
 
 def translate_text(text, source_lang, target_lang, style="conversational", max_retries=3):
-    """Translate text with retry logic and style enhancement"""
     if not text.strip():
         return text
     
-    # Preprocess for natural translation
     processed_text = preprocess_text(text, style)
-    
     payload = {
         "inputs": processed_text,
         "parameters": {
             "src_lang": source_lang,
             "tgt_lang": target_lang,
             "max_length": 512,
-            "temperature": 0.7,  # Add some creativity
+            "temperature": 0.7,
             "do_sample": True
         }
     }
@@ -78,35 +74,29 @@ def translate_text(text, source_lang, target_lang, style="conversational", max_r
             
             if isinstance(result, list) and len(result) > 0:
                 translation = result[0].get("translation_text", "")
-                # Clean up the translation
-                translation = clean_translation(translation, style)
-                return translation
-            else:
-                return f"[ERROR] Unexpected response format"
+                return clean_translation(translation, style)
+            return "[ERROR] Unexpected response format"
                 
         except requests.exceptions.Timeout:
             if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)  # Exponential backoff
+                time.sleep(2 ** attempt)
                 continue
-            return f"[ERROR] Translation timeout after {max_retries} attempts"
+            return "[ERROR] Translation timeout"
         except requests.exceptions.RequestException as e:
             return f"[ERROR] Network error: {str(e)}"
         except Exception as e:
             return f"[ERROR] {str(e)}"
     
-    return "[ERROR] Translation failed after all retries"
+    return "[ERROR] Translation failed"
 
 def clean_translation(translation, style):
-    """Clean and post-process translation"""
     if not translation:
         return translation
     
-    # Remove style instruction if it appears in translation
     for prompt in STYLE_PROMPTS.values():
         if prompt and prompt in translation:
             translation = translation.replace(prompt, "")
     
-    # Remove common prefixes that might appear
     prefixes_to_remove = [
         "Text to translate:",
         "Translation:",
@@ -121,19 +111,18 @@ def clean_translation(translation, style):
     return translation.strip()
 
 def extract_text_from_docx(uploaded_file):
-    """Extract text from docx file with better structure preservation"""
     doc = Document(uploaded_file)
     content = []
     
     for element in doc.element.body:
-        if element.tag.endswith('p'):  # Paragraph
+        if element.tag.endswith('p'):
             para_text = ""
             for run in element:
                 if run.text:
                     para_text += run.text
             if para_text.strip():
                 content.append(("paragraph", para_text.strip()))
-        elif element.tag.endswith('tbl'):  # Table
+        elif element.tag.endswith('tbl'):
             content.append(("table", "[Table content - manual review needed]"))
     
     return content
@@ -145,60 +134,34 @@ st.set_page_config(
     layout="wide"
 )
 
+# Initialize session state
+if 'translating' not in st.session_state:
+    st.session_state.translating = False
+if 'translated_paragraphs' not in st.session_state:
+    st.session_state.translated_paragraphs = []
+if 'current_paragraph' not in st.session_state:
+    st.session_state.current_paragraph = 0
+if 'translation_in_progress' not in st.session_state:
+    st.session_state.translation_in_progress = False
+
 st.title("Indian Language Document Translator")
 st.write("Translate Word documents between Indian languages using Meta's NLLB-200 model")
 
-# Create columns for better layout
 col1, col2 = st.columns([1, 2])
 
 with col1:
     st.subheader("Settings")
-    
-    # File upload
-    uploaded_file = st.file_uploader(
-        "Choose a Word document", 
-        type=["docx"],
-        help="Upload a .docx file to translate"
-    )
-    
-    # Language selection
-    source = st.selectbox(
-        "From Language", 
-        list(INDIC_LANGS.keys()), 
-        index=0,
-        help="Select the source language of your document"
-    )
-    
-    target = st.selectbox(
-        "To Language", 
-        list(INDIC_LANGS.keys()), 
-        index=1,
-        help="Select the target language for translation"
-    )
-    
-    # Translation style
-    style = st.selectbox(
-        "Translation Style",
-        ["conversational", "casual", "simple", "formal"],
-        index=0,
-        help="Choose the style of translation"
-    )
-    
-    # Batch size for processing
-    batch_size = st.slider(
-        "Batch Size", 
-        min_value=1, 
-        max_value=10, 
-        value=3,
-        help="Number of paragraphs to process at once"
-    )
+    uploaded_file = st.file_uploader("Choose a Word document", type=["docx"])
+    source = st.selectbox("From Language", list(INDIC_LANGS.keys()), index=0)
+    target = st.selectbox("To Language", list(INDIC_LANGS.keys()), index=1)
+    style = st.selectbox("Translation Style", ["conversational", "casual", "simple", "formal"], index=0)
+    batch_size = st.slider("Batch Size", min_value=1, max_value=10, value=3)
 
 with col2:
     st.subheader("Translation")
     
     if uploaded_file is not None:
         try:
-            # Extract content
             content = extract_text_from_docx(uploaded_file)
             paragraphs = [item[1] for item in content if item[0] == "paragraph"]
             
@@ -208,42 +171,51 @@ with col2:
             
             st.info(f"Found {len(paragraphs)} paragraphs to translate")
             
-session_state.translated_paragraphs[i] if i < len(st.session_state.translated_paragraphs) else ""
-                    
-                    # Show translation status
-                    if st.session_state.translating:
-                        if i < st.session_state.current_paragraph:
-                            status = "✅ Completed"
-                        elif i == st.session_state.current_paragraph:
-                            status = "⏳ Translating..."
-                        else:
-                            status = "⏸️ Pending"
-                        st.caption(f"Status: {status}")
-                    
-                    # Editable translation area
-                    edited_translation = st.text_area(
-                        f"Translation {i+1}:",
-                        value=current_translation,
-                        height=100,
-                        key=f"trans_{i}",
-                        placeholder="Translation will appear here..."
-                    )
-                    
-                    edited_translations.append(edited_translation)
-                    st.markdown("---")
+            # Translate button
+            if st.button("Start Translation") and not st.session_state.translating:
+                st.session_state.translating = True
+                st.session_state.translated_paragraphs = []
+                st.session_state.current_paragraph = 0
+                st.session_state.translation_in_progress = True
+                st.rerun()
+
+            # Display translations
+            edited_translations = []
+            for i, paragraph in enumerate(paragraphs):
+                st.markdown(f"**Original Paragraph {i+1}:**")
+                st.write(paragraph)
+                
+                current_translation = st.session_state.translated_paragraphs[i] if i < len(st.session_state.translated_paragraphs) else ""
+                
+                if st.session_state.translating:
+                    if i < st.session_state.current_paragraph:
+                        status = "✅ Completed"
+                    elif i == st.session_state.current_paragraph:
+                        status = "⏳ Translating..."
+                    else:
+                        status = "⏸️ Pending"
+                    st.caption(f"Status: {status}")
+                
+                edited_translation = st.text_area(
+                    f"Translation {i+1}:",
+                    value=current_translation,
+                    height=100,
+                    key=f"trans_{i}",
+                    placeholder="Translation will appear here..."
+                )
+                
+                edited_translations.append(edited_translation)
+                st.markdown("---")
             
-            # Live translation process
+            # Translation process
             if st.session_state.translating and st.session_state.current_paragraph < len(paragraphs):
                 current_idx = st.session_state.current_paragraph
                 
-                # Show progress at the top
-                progress = current_idx / len(paragraphs)
-                progress_container = st.container()
-                with progress_container:
+                with st.container():
+                    progress = current_idx / len(paragraphs)
                     st.progress(progress)
                     st.info(f"Translating paragraph {current_idx + 1} of {len(paragraphs)}")
                 
-                # Translate current paragraph
                 translation = translate_text(
                     paragraphs[current_idx], 
                     INDIC_LANGS[source], 
@@ -251,37 +223,33 @@ session_state.translated_paragraphs[i] if i < len(st.session_state.translated_pa
                     style
                 )
                 
-                # Update session state
                 if len(st.session_state.translated_paragraphs) <= current_idx:
                     st.session_state.translated_paragraphs.extend([""] * (current_idx + 1 - len(st.session_state.translated_paragraphs)))
                 
                 st.session_state.translated_paragraphs[current_idx] = translation
                 st.session_state.current_paragraph += 1
                 
-                # Auto-continue to next paragraph
                 if st.session_state.current_paragraph < len(paragraphs):
                     time.sleep(0.5)
                     st.rerun()
                 else:
                     st.session_state.translating = False
+                    st.session_state.translation_in_progress = False
                     st.success("Translation completed!")
                     st.rerun()
                 
-            # Download button (only show when all translations are complete)
+            # Download button
             if len(st.session_state.translated_paragraphs) == len(paragraphs) and not st.session_state.translation_in_progress:
                 if st.button("Download Translated Document", type="primary"):
-                    # Create new document
                     final_doc = Document()
                     for translation in edited_translations:
                         if translation.strip():
                             final_doc.add_paragraph(translation)
                     
-                    # Save to buffer
                     buffer = BytesIO()
                     final_doc.save(buffer)
                     buffer.seek(0)
                     
-                    # Download
                     st.download_button(
                         label="Download Word File",
                         data=buffer.getvalue(),
