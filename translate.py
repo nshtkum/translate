@@ -1,70 +1,82 @@
 import streamlit as st
 import requests
 from docx import Document
-from docx.shared import Pt
 from io import BytesIO
-import time
+import json
 
-# API config
+# Hugging Face Endpoint Config
 API_URL = "https://bagwkqqw6a6i3e7p.us-east-1.aws.endpoints.huggingface.cloud"
-API_TOKEN = st.secrets["huggingface"]["api_key"]
-HEADERS = {
-    "Authorization": f"Bearer {API_TOKEN}",
+HF_TOKEN = st.secrets["HF_TOKEN"]
+
+headers = {
+    "Authorization": f"Bearer {HF_TOKEN}",
     "Content-Type": "application/json"
 }
 
-st.title("📄 Translate Word File (.docx) with Meta NLLB (Private Endpoint)")
+# UI
+st.title("🇮🇳 Translate Word File (.docx) using Meta AI")
+st.caption("Supports only Indian languages via Meta's `nllb-200` model")
 
+# Upload Word file
 uploaded_file = st.file_uploader("Upload a Word (.docx) file", type=["docx"])
-source_lang = st.selectbox("Source Language", ["eng", "hin", "fra", "deu", "spa"])
-target_lang = st.selectbox("Target Language", ["hin", "eng", "fra", "deu", "spa"])
 
-def translate(text, src, tgt, max_retries=3, delay=2):
-    payload = {
-        "inputs": text,
-        "parameters": {"src_lang": src, "tgt_lang": tgt}
-    }
-    for attempt in range(max_retries):
-        try:
-            r = requests.post(API_URL, headers=HEADERS, json=payload, timeout=60)
-            if r.status_code == 200:
-                return r.json()[0]["translation_text"]
-            else:
-                st.error(f"Error {r.status_code}: {r.text}")
-                break
-        except Exception as e:
-            st.warning(f"Retry {attempt+1}: {e}")
-            time.sleep(delay)
-    return "[Translation failed]"
+# Only Indic languages
+INDIC_LANGS = {
+    "English": "eng_Latn",
+    "Hindi": "hin_Deva",
+    "Marathi": "mar_Deva",
+    "Bengali": "ben_Beng",
+    "Tamil": "tam_Taml",
+    "Telugu": "tel_Telu",
+    "Gujarati": "guj_Gujr",
+    "Kannada": "kan_Knda",
+    "Malayalam": "mal_Mlym",
+    "Punjabi": "pan_Guru",
+    "Urdu": "urd_Arab",
+    "Odia": "ory_Orya"
+}
 
-if uploaded_file and st.button("Translate and Download"):
-    with st.spinner("Translating document..."):
-        original = Document(uploaded_file)
-        translated_doc = Document()
+source = st.selectbox("Source Language", list(INDIC_LANGS.keys()), index=0)
+target = st.selectbox("Target Language", list(INDIC_LANGS.keys()), index=1)
 
-        for para in original.paragraphs:
-            text = para.text.strip()
-            trans_para = translated_doc.add_paragraph()
-            if text:
-                translated_text = translate(text, source_lang, target_lang)
-                run = trans_para.add_run(translated_text)
-                if para.runs:
-                    r0 = para.runs[0]
-                    run.bold = r0.bold
-                    run.italic = r0.italic
-                    run.font.size = r0.font.size or Pt(12)
-                    run.font.name = r0.font.name or "Arial"
-            else:
-                trans_para.add_run("")
+if uploaded_file:
+    doc = Document(uploaded_file)
+    paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+    
+    st.markdown("### ✍️ Translate & Edit")
+    translated_paragraphs = []
 
-        output = BytesIO()
-        translated_doc.save(output)
-        output.seek(0)
+    for i, para in enumerate(paragraphs):
+        with st.spinner(f"Translating paragraph {i+1}/{len(paragraphs)}..."):
+            payload = {
+                "inputs": para,
+                "parameters": {
+                    "src_lang": INDIC_LANGS[source],
+                    "tgt_lang": INDIC_LANGS[target]
+                }
+            }
+            try:
+                res = requests.post(API_URL, headers=headers, data=json.dumps(payload), timeout=30)
+                result = res.json()
+                translation = result[0]["translation_text"]
+            except Exception as e:
+                translation = f"[ERROR] {str(e)}"
 
-        st.success("✅ Translation complete!")
+        edited = st.text_area(f"Para {i+1}", value=translation, height=100)
+        translated_paragraphs.append(edited)
+
+    if st.button("📥 Download Translated Word File"):
+        final_doc = Document()
+        for p in translated_paragraphs:
+            final_doc.add_paragraph(p)
+
+        buffer = BytesIO()
+        final_doc.save(buffer)
+        buffer.seek(0)
+
         st.download_button(
-            label="⬇️ Download Translated .docx",
-            data=output,
+            label="Download .docx",
+            data=buffer,
             file_name="translated_output.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
