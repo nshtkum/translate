@@ -208,117 +208,86 @@ with col2:
             
             st.info(f"Found {len(paragraphs)} paragraphs to translate")
             
-            # Initialize session state
-            if 'translating' not in st.session_state:
-                st.session_state.translating = False
-            if 'translated_paragraphs' not in st.session_state:
-                st.session_state.translated_paragraphs = [""] * len(paragraphs)
-            if 'current_paragraph' not in st.session_state:
-                st.session_state.current_paragraph = 0
-            
-            # Control buttons
-            col_btn1, col_btn2 = st.columns(2)
-            
-            with col_btn1:
-                if st.button("Start Translation", type="primary", disabled=st.session_state.translating):
-                    st.session_state.translating = True
-                    st.session_state.current_paragraph = 0
-                    st.session_state.translated_paragraphs = [""] * len(paragraphs)
-                    st.rerun()
-            
-            with col_btn2:
-                if st.button("Stop Translation", disabled=not st.session_state.translating):
-                    st.session_state.translating = False
-                    st.rerun()
+session_state.translated_paragraphs[i] if i < len(st.session_state.translated_paragraphs) else ""
+                    
+                    # Show translation status
+                    if st.session_state.translating:
+                        if i < st.session_state.current_paragraph:
+                            status = "✅ Completed"
+                        elif i == st.session_state.current_paragraph:
+                            status = "⏳ Translating..."
+                        else:
+                            status = "⏸️ Pending"
+                        st.caption(f"Status: {status}")
+                    
+                    # Editable translation area
+                    edited_translation = st.text_area(
+                        f"Translation {i+1}:",
+                        value=current_translation,
+                        height=100,
+                        key=f"trans_{i}",
+                        placeholder="Translation will appear here..."
+                    )
+                    
+                    edited_translations.append(edited_translation)
+                    st.markdown("---")
             
             # Live translation process
             if st.session_state.translating and st.session_state.current_paragraph < len(paragraphs):
                 current_idx = st.session_state.current_paragraph
                 
-                # Show progress
+                # Show progress at the top
                 progress = current_idx / len(paragraphs)
-                st.progress(progress)
-                st.write(f"Translating paragraph {current_idx + 1} of {len(paragraphs)}")
+                progress_container = st.container()
+                with progress_container:
+                    st.progress(progress)
+                    st.info(f"Translating paragraph {current_idx + 1} of {len(paragraphs)}")
                 
                 # Translate current paragraph
-                with st.spinner(f"Translating paragraph {current_idx + 1}..."):
-                    translation = translate_text(
-                        paragraphs[current_idx], 
-                        INDIC_LANGS[source], 
-                        INDIC_LANGS[target],
-                        style
-                    )
-                    st.session_state.translated_paragraphs[current_idx] = translation
-                    st.session_state.current_paragraph += 1
+                translation = translate_text(
+                    paragraphs[current_idx], 
+                    INDIC_LANGS[source], 
+                    INDIC_LANGS[target],
+                    style
+                )
+                
+                # Update session state
+                if len(st.session_state.translated_paragraphs) <= current_idx:
+                    st.session_state.translated_paragraphs.extend([""] * (current_idx + 1 - len(st.session_state.translated_paragraphs)))
+                
+                st.session_state.translated_paragraphs[current_idx] = translation
+                st.session_state.current_paragraph += 1
                 
                 # Auto-continue to next paragraph
                 if st.session_state.current_paragraph < len(paragraphs):
-                    time.sleep(0.5)  # Small delay to show progress
+                    time.sleep(0.5)
                     st.rerun()
                 else:
                     st.session_state.translating = False
                     st.success("Translation completed!")
                     st.rerun()
-            
-            # Show live editable translations
-            if any(t.strip() for t in st.session_state.translated_paragraphs):
-                st.subheader("Live Translation - Edit as needed")
                 
-                edited_translations = []
-                for i, (original, translated) in enumerate(zip(paragraphs, st.session_state.translated_paragraphs)):
-                    st.write(f"**Paragraph {i+1}:**")
+            # Download button (only show when all translations are complete)
+            if len(st.session_state.translated_paragraphs) == len(paragraphs) and not st.session_state.translation_in_progress:
+                if st.button("Download Translated Document", type="primary"):
+                    # Create new document
+                    final_doc = Document()
+                    for translation in edited_translations:
+                        if translation.strip():
+                            final_doc.add_paragraph(translation)
                     
-                    # Show original in a disabled text area for reference
-                    st.text_area(
-                        f"Original {i+1}:",
-                        value=original,
-                        height=60,
-                        disabled=True,
-                        key=f"orig_{i}"
+                    # Save to buffer
+                    buffer = BytesIO()
+                    final_doc.save(buffer)
+                    buffer.seek(0)
+                    
+                    # Download
+                    st.download_button(
+                        label="Download Word File",
+                        data=buffer.getvalue(),
+                        file_name=f"translated_{source}_to_{target}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                     )
-                    
-                    # Show editable translation
-                    if translated.strip():
-                        edited_translation = st.text_area(
-                            f"Translation {i+1}:",
-                            value=translated,
-                            height=100,
-                            key=f"trans_{i}",
-                            placeholder="Translation will appear here..."
-                        )
-                    else:
-                        edited_translation = st.text_area(
-                            f"Translation {i+1}:",
-                            value="",
-                            height=100,
-                            key=f"trans_{i}",
-                            placeholder="Waiting for translation..." if st.session_state.translating else "Translation will appear here..."
-                        )
-                    
-                    edited_translations.append(edited_translation)
-                    st.markdown("---")
-                
-                # Download button (only show if translation is complete)
-                if not st.session_state.translating and all(t.strip() for t in st.session_state.translated_paragraphs):
-                    if st.button("Download Translated Document", type="primary"):
-                        # Create new document
-                        final_doc = Document()
-                        for translation in edited_translations:
-                            if translation.strip():
-                                final_doc.add_paragraph(translation)
-                        
-                        # Save to buffer
-                        buffer = BytesIO()
-                        final_doc.save(buffer)
-                        buffer.seek(0)
-                        
-                        # Download
-                        st.download_button(
-                            label="Download Word File",
-                            data=buffer.getvalue(),
-                            file_name=f"translated_{source}_to_{target}.docx",
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                        )
         
         except Exception as e:
             st.error(f"Error processing document: {str(e)}")
