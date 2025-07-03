@@ -14,7 +14,7 @@ headers = {
 }
 
 # UI
-st.title("🇮🇳 Translate Word File (.docx) using Meta AI")
+st.title("MB Translate Word File (.docx) using Meta AI")
 st.caption("Supports only Indian languages via Meta's `nllb-200` model")
 
 uploaded_file = st.file_uploader("Upload a Word (.docx) file", type=["docx"])
