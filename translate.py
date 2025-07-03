@@ -6,7 +6,7 @@ import json
 
 # Hugging Face Endpoint Config
 API_URL = "https://bagwkqqw6a6i3e7p.us-east-1.aws.endpoints.huggingface.cloud"
-HF_TOKEN = st.secrets["HF_TOKEN"]
+HF_TOKEN = st.secrets["huggingface"]["api_key"]  # ✅ FIXED LINE
 
 headers = {
     "Authorization": f"Bearer {HF_TOKEN}",
@@ -17,10 +17,8 @@ headers = {
 st.title("🇮🇳 Translate Word File (.docx) using Meta AI")
 st.caption("Supports only Indian languages via Meta's `nllb-200` model")
 
-# Upload Word file
 uploaded_file = st.file_uploader("Upload a Word (.docx) file", type=["docx"])
 
-# Only Indic languages
 INDIC_LANGS = {
     "English": "eng_Latn",
     "Hindi": "hin_Deva",
